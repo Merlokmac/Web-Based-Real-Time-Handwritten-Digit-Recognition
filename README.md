@@ -9,10 +9,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> Máy MacBook Pro 16" 2019 (Intel i9, GPU AMD Radeon Pro 5500M) không hỗ trợ CUDA.
-> Code tự động chọn thiết bị: CUDA > MPS (Apple Metal) > CPU.
-> Với MNIST (ảnh nhỏ, dataset nhẹ), CPU cũng đủ nhanh (vài phút cho 10 epoch).
-
 ## 2. Chạy huấn luyện
 
 ```bash
