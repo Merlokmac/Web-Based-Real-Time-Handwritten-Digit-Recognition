@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: |
+          python -m compileall app.py model.py train.py
+
+      - name: Smoke test model
+        run: |
+          python - <<'PY'
+          import torch
+          from model import MnistCNN
+
+          model = MnistCNN()
+          x = torch.randn(2, 1, 28, 28)
+          y = model(x)
+          assert tuple(y.shape) == (2, 10), y.shape
+          print('Model smoke test passed:', tuple(y.shape))
+          PY

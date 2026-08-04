@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Demo nhận diện chữ số viết tay - MNIST CNN</title>
+<style>
+    :root {
+        --bg: #0f1115;
+        --panel: #1a1d24;
+        --accent: #4f8cff;
+        --text: #e8e8ec;
+        --muted: #8a8f98;
+    }
+    * { box-sizing: border-box; }
+    body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 40px 20px;
+        margin: 0;
+    }
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+    p.subtitle { color: var(--muted); margin-top: 0; margin-bottom: 32px; font-size: 14px; }
+
+    .container {
+        display: flex;
+        gap: 40px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .panel {
+        background: var(--panel);
+        border-radius: 16px;
+        padding: 24px;
+    }
+
+    #canvas {
+        background: #000;
+        border-radius: 8px;
+        cursor: crosshair;
+        touch-action: none;
+    }
+
+    .buttons {
+        display: flex;
+        gap: 12px;
+        margin-top: 16px;
+    }
+
+    button {
+        flex: 1;
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    #clearBtn { background: #2a2e38; color: var(--text); }
+    #predictBtn { background: var(--accent); color: white; }
+    button:hover { opacity: 0.85; }
+
+    .result-panel {
+        width: 280px;
+        text-align: center;
+    }
+
+    #prediction-display {
+        font-size: 96px;
+        font-weight: 700;
+        color: var(--accent);
+        line-height: 1;
+        margin: 8px 0;
+        min-height: 110px;
+    }
+
+    #confidence-text {
+        color: var(--muted);
+        font-size: 14px;
+        margin-bottom: 24px;
+    }
+
+    .prob-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+        font-size: 13px;
+    }
+    .prob-label { width: 14px; color: var(--muted); }
+    .prob-bar-bg {
+        flex: 1;
+        background: #2a2e38;
+        border-radius: 4px;
+        height: 14px;
+        overflow: hidden;
+    }
+    .prob-bar-fill {
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.25s ease;
+    }
+    .prob-value { width: 40px; text-align: right; color: var(--muted); }
+
+    .placeholder { color: var(--muted); font-size: 14px; margin-top: 40px; }
+
+    .upload-panel {
+        width: 100%;
+        max-width: 720px;
+        margin-top: 32px;
+    }
+    .panel-title { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
+    .panel-desc { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+    .file-label {
+        display: inline-block;
+        background: #2a2e38;
+        color: var(--text);
+        padding: 10px 18px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 14px;
+        margin-right: 12px;
+    }
+    .file-label:hover { opacity: 0.85; }
+    .file-name { color: var(--muted); font-size: 13px; }
+
+    .full-width-btn {
+        display: block;
+        width: 100%;
+        margin-top: 16px;
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .full-width-btn:disabled { background: #2a2e38; color: var(--muted); cursor: not-allowed; }
+    .full-width-btn:not(:disabled):hover { opacity: 0.85; }
+
+    .upload-result { margin-top: 20px; }
+    .annotated-img {
+        max-width: 100%;
+        border-radius: 8px;
+        display: block;
+        margin-bottom: 16px;
+        border: 1px solid #2a2e38;
+    }
+    .number-string {
+        font-size: 40px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 6px;
+        margin-bottom: 16px;
+    }
+    .digit-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+    .digit-chip {
+        background: #2a2e38;
+        border-radius: 8px;
+        padding: 8px 14px;
+        text-align: center;
+        min-width: 48px;
+    }
+    .digit-chip .chip-digit {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--accent);
+        display: block;
+    }
+    .digit-chip .chip-conf { color: var(--muted); font-size: 11px; }
+    .upload-error { color: #ff6b6b; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Demo: Nhận diện chữ số viết tay</h1>
+<p class="subtitle">CNN huấn luyện trên MNIST · Project III</p>
+
+<div class="container">
+    <div class="panel">
+        <canvas id="canvas" width="280" height="280"></canvas>
+        <div class="buttons">
+            <button id="clearBtn">Xóa</button>
+            <button id="predictBtn">Dự đoán</button>
+        </div>
+    </div>
+
+    <div class="panel result-panel">
+        <div id="prediction-display">?</div>
+        <div id="confidence-text">Vẽ 1 chữ số rồi bấm "Dự đoán"</div>
+        <div id="prob-bars"></div>
+    </div>
+</div>
+
+<div class="panel upload-panel">
+    <h2 class="panel-title">Tải ảnh lên · nhận diện nhiều chữ số</h2>
+    <p class="panel-desc">Chọn ảnh chụp/scan chứa 1 hoặc nhiều chữ số viết tay.</p>
+
+    <input type="file" id="imageInput" accept="image/*" hidden>
+    <label for="imageInput" class="file-label">Chọn ảnh</label>
+    <span id="fileName" class="file-name">Chưa chọn file nào</span>
+
+    <button id="uploadPredictBtn" class="full-width-btn" disabled>Nhận diện</button>
+
+    <div id="uploadResult" class="upload-result"></div>
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let isDrawing = false;
+
+function initCanvas() {
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 18;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+}
+initCanvas();
+
+function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    if (e.touches && e.touches.length > 0) {
+        return {
+            x: (e.touches[0].clientX - rect.left) * (canvas.width / rect.width),
+            y: (e.touches[0].clientY - rect.top) * (canvas.height / rect.height),
+        };
+    }
+    return {
+        x: (e.clientX - rect.left) * (canvas.width / rect.width),
+        y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+}
+
+let lastPos = null;
+
+function startDraw(e) {
+    isDrawing = true;
+    lastPos = getPos(e);
+    e.preventDefault();
+}
+
+function draw(e) {
+    if (!isDrawing) return;
+    const pos = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastPos.x, lastPos.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastPos = pos;
+    e.preventDefault();
+}
+
+function stopDraw() {
+    isDrawing = false;
+}
+
+canvas.addEventListener("mousedown", startDraw);
+canvas.addEventListener("mousemove", draw);
+canvas.addEventListener("mouseup", stopDraw);
+canvas.addEventListener("mouseleave", stopDraw);
+canvas.addEventListener("touchstart", startDraw);
+canvas.addEventListener("touchmove", draw);
+canvas.addEventListener("touchend", stopDraw);
+
+document.getElementById("clearBtn").addEventListener("click", () => {
+    initCanvas();
+    document.getElementById("prediction-display").textContent = "?";
+    document.getElementById("confidence-text").textContent = 'Vẽ 1 chữ số rồi bấm "Dự đoán"';
+    document.getElementById("prob-bars").innerHTML = "";
+});
+
+document.getElementById("predictBtn").addEventListener("click", async () => {
+    const dataUrl = canvas.toDataURL("image/png");
+
+    document.getElementById("confidence-text").textContent = "Đang dự đoán...";
+
+    try {
+        const res = await fetch("/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image: dataUrl }),
+        });
+        const result = await res.json();
+
+        document.getElementById("prediction-display").textContent = result.prediction;
+        document.getElementById("confidence-text").textContent =
+            `Độ tin cậy: ${result.confidence}%`;
+
+        const barsContainer = document.getElementById("prob-bars");
+        barsContainer.innerHTML = "";
+        for (let i = 0; i < 10; i++) {
+            const prob = result.probabilities[i.toString()];
+            const row = document.createElement("div");
+            row.className = "prob-row";
+            row.innerHTML = `
+                <span class="prob-label">${i}</span>
+                <div class="prob-bar-bg">
+                    <div class="prob-bar-fill" style="width: ${prob}%"></div>
+                </div>
+                <span class="prob-value">${prob}%</span>
+            `;
+            barsContainer.appendChild(row);
+        }
+    } catch (err) {
+        document.getElementById("confidence-text").textContent =
+            "Lỗi: không kết nối được server. Kiểm tra app.py đang chạy chưa.";
+        console.error(err);
+    }
+});
+
+// ---- Upload ảnh: nhận diện nhiều chữ số ----
+const imageInput = document.getElementById("imageInput");
+const fileNameEl = document.getElementById("fileName");
+const uploadPredictBtn = document.getElementById("uploadPredictBtn");
+const uploadResult = document.getElementById("uploadResult");
+
+let selectedFile = null;
+
+imageInput.addEventListener("change", () => {
+    selectedFile = imageInput.files[0] || null;
+    fileNameEl.textContent = selectedFile ? selectedFile.name : "Chưa chọn file nào";
+    uploadPredictBtn.disabled = !selectedFile;
+    uploadResult.innerHTML = "";
+});
+
+uploadPredictBtn.addEventListener("click", async () => {
+    if (!selectedFile) return;
+
+    uploadResult.innerHTML = '<p class="panel-desc">Đang xử lý ảnh...</p>';
+    uploadPredictBtn.disabled = true;
+
+    const formData = new FormData();
+    formData.append("image", selectedFile);
+
+    try {
+        const res = await fetch("/predict_image", { method: "POST", body: formData });
+        const result = await res.json();
+
+        if (result.error) {
+            uploadResult.innerHTML = `<p class="upload-error">${result.error}</p>`;
+            return;
+        }
+
+        let chipsHtml = "";
+        result.digits.forEach((d) => {
+            chipsHtml += `
+                <div class="digit-chip">
+                    <span class="chip-digit">${d.digit}</span>
+                    <span class="chip-conf">${d.confidence}%</span>
+                </div>`;
+        });
+
+        uploadResult.innerHTML = `
+            <img class="annotated-img" src="${result.annotated_image}" alt="Kết quả nhận diện">
+            <div class="number-string">${result.number_string}</div>
+            <div class="digit-chips">${chipsHtml}</div>
+        `;
+    } catch (err) {
+        uploadResult.innerHTML = '<p class="upload-error">Lỗi kết nối server.</p>';
+        console.error(err);
+    } finally {
+        uploadPredictBtn.disabled = false;
+    }
+});
+</script>
+
+</body>
+</html>
