@@ -5,43 +5,171 @@
 <title>Demo nhận diện chữ số viết tay - MNIST CNN</title>
 <style>
     :root {
-        --bg: #0f1115;
-        --panel: #1a1d24;
-        --accent: #4f8cff;
-        --text: #e8e8ec;
-        --muted: #8a8f98;
+        --bg: #071521;
+        --bg-strong: #0e1d2b;
+        --panel: rgba(12, 27, 39, 0.78);
+        --panel-soft: rgba(15, 35, 49, 0.9);
+        --panel-strong: #102334;
+        --accent: #6ee7ff;
+        --accent-2: #7c9cff;
+        --accent-3: #7ef0cb;
+        --text: #eaf7ff;
+        --text-muted: #9bb4c8;
+        --line: rgba(148, 178, 209, 0.18);
+        --success: #7ef0cb;
+        --warning: #f7d58b;
+        --danger: #ff7c8d;
+        --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
     }
+
     * { box-sizing: border-box; }
-    body {
-        background: var(--bg);
-        color: var(--text);
-        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: 40px 20px;
+
+    html, body {
         margin: 0;
+        min-height: 100%;
+        background:
+            radial-gradient(circle at top left, rgba(112, 153, 255, 0.25), transparent 30%),
+            radial-gradient(circle at bottom right, rgba(126, 240, 203, 0.14), transparent 28%),
+            linear-gradient(135deg, #071521 0%, #0c1d2c 32%, #0b1723 100%);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
-    p.subtitle { color: var(--muted); margin-top: 0; margin-bottom: 32px; font-size: 14px; }
 
-    .container {
+    body {
         display: flex;
-        gap: 40px;
-        align-items: flex-start;
-        flex-wrap: wrap;
         justify-content: center;
+        padding: 36px 18px 60px;
     }
 
-    .panel {
-        background: var(--panel);
-        border-radius: 16px;
-        padding: 24px;
+    .page-shell {
+        width: min(1180px, 100%);
+    }
+
+    .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 24px;
+        padding: 6px 4px;
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .brand-mark {
+        width: 46px;
+        height: 46px;
+        border-radius: 14px;
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        font-size: 17px;
+        letter-spacing: 1px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #02151d;
+        box-shadow: 0 14px 28px rgba(110, 231, 255, 0.38);
+    }
+
+    .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+    }
+
+    h1 {
+        margin: 0;
+        font-size: clamp(1.4rem, 2vw, 2.2rem);
+        font-weight: 700;
+        letter-spacing: -0.04em;
+    }
+
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(126, 240, 203, 0.25);
+        background: rgba(126, 240, 203, 0.08);
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .status-pill .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--success);
+        box-shadow: 0 0 0 5px rgba(126, 240, 203, 0.18);
+    }
+
+    .workspace {
+        display: grid;
+        grid-template-columns: 1.35fr 0.9fr;
+        gap: 22px;
+        margin-bottom: 22px;
+    }
+
+    .card {
+        background: linear-gradient(180deg, rgba(17, 31, 42, 0.94), rgba(12, 24, 34, 0.92));
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+    }
+
+    .draw-card, .result-card {
+        padding: 22px;
+    }
+
+    .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+
+    .panel-header h2 {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+    }
+
+    .mini-tag {
+        background: rgba(110, 231, 255, 0.08);
+        border: 1px solid rgba(110, 231, 255, 0.2);
+        color: var(--accent);
+        padding: 7px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        font-weight: 700;
+    }
+
+    .canvas-wrap {
+        background: linear-gradient(180deg, rgba(6, 17, 25, 0.9), rgba(8, 18, 27, 0.96));
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 18px;
+        padding: 14px;
     }
 
     #canvas {
-        background: #000;
-        border-radius: 8px;
+        display: block;
+        width: min(100%, 420px);
+        aspect-ratio: 1;
+        margin: 0 auto;
+        background: #020a10;
+        border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.06);
+        box-shadow: inset 0 0 0 1px rgba(110, 231, 255, 0.1);
         cursor: crosshair;
         touch-action: none;
     }
@@ -49,169 +177,364 @@
     .buttons {
         display: flex;
         gap: 12px;
-        margin-top: 16px;
+        margin-top: 18px;
     }
 
     button {
-        flex: 1;
-        padding: 12px;
-        border: none;
-        border-radius: 8px;
+        border: 0;
+        border-radius: 14px;
+        padding: 12px 16px;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 700;
         cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
     }
 
-    #clearBtn { background: #2a2e38; color: var(--text); }
-    #predictBtn { background: var(--accent); color: white; }
-    button:hover { opacity: 0.85; }
+    button:hover {
+        transform: translateY(-1px);
+    }
 
-    .result-panel {
-        width: 280px;
-        text-align: center;
+    #clearBtn {
+        flex: 1;
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text);
+        border: 1px solid var(--line);
+    }
+
+    #predictBtn {
+        flex: 1;
+        color: #04242d;
+        background: linear-gradient(135deg, var(--accent), #9ff1ff);
+        box-shadow: 0 18px 30px rgba(110, 231, 255, 0.28);
+    }
+
+    .result-card {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 100%;
+    }
+
+    .result-header {
+        margin-bottom: 10px;
+        color: var(--text-muted);
+        font-size: 0.76rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
     }
 
     #prediction-display {
-        font-size: 96px;
-        font-weight: 700;
-        color: var(--accent);
+        min-height: 118px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: clamp(4.5rem, 10vw, 7rem);
         line-height: 1;
-        margin: 8px 0;
-        min-height: 110px;
+        font-weight: 800;
+        color: var(--accent);
+        text-shadow: 0 0 18px rgba(110, 231, 255, 0.3);
+        margin-bottom: 10px;
     }
 
     #confidence-text {
-        color: var(--muted);
-        font-size: 14px;
-        margin-bottom: 24px;
+        margin: 0 0 18px;
+        color: var(--text-muted);
+        font-size: 0.95rem;
+        text-align: center;
+        min-height: 22px;
+    }
+
+    #prob-bars {
+        display: grid;
+        gap: 8px;
     }
 
     .prob-row {
-        display: flex;
+        display: grid;
+        grid-template-columns: 18px 1fr 42px;
         align-items: center;
         gap: 10px;
-        margin-bottom: 6px;
-        font-size: 13px;
+        font-size: 0.8rem;
     }
-    .prob-label { width: 14px; color: var(--muted); }
+
+    .prob-label {
+        color: var(--text-muted);
+        font-weight: 700;
+    }
+
     .prob-bar-bg {
-        flex: 1;
-        background: #2a2e38;
-        border-radius: 4px;
-        height: 14px;
+        height: 12px;
+        width: 100%;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.05);
         overflow: hidden;
     }
+
     .prob-bar-fill {
         height: 100%;
-        background: var(--accent);
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent-2), var(--accent));
+        box-shadow: 0 0 18px rgba(110, 231, 255, 0.25);
         transition: width 0.25s ease;
     }
-    .prob-value { width: 40px; text-align: right; color: var(--muted); }
 
-    .placeholder { color: var(--muted); font-size: 14px; margin-top: 40px; }
-
-    .upload-panel {
-        width: 100%;
-        max-width: 720px;
-        margin-top: 32px;
+    .prob-value {
+        text-align: right;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
     }
-    .panel-title { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
-    .panel-desc { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+    .upload-card, .webcam-card {
+        padding: 22px;
+        margin-top: 22px;
+    }
+
+    .panel-title {
+        margin: 0 0 4px;
+        font-size: 1.1rem;
+        font-weight: 700;
+    }
+
+    .panel-desc {
+        color: var(--text-muted);
+        margin: 0 0 18px;
+        font-size: 0.92rem;
+        line-height: 1.6;
+    }
+
+    .upload-controls {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+    }
 
     .file-label {
-        display: inline-block;
-        background: #2a2e38;
-        color: var(--text);
-        padding: 10px 18px;
-        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 11px 16px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        font-weight: 700;
         cursor: pointer;
-        font-size: 14px;
-        margin-right: 12px;
+        color: var(--text);
+        transition: border-color 0.2s ease, transform 0.2s ease;
     }
-    .file-label:hover { opacity: 0.85; }
-    .file-name { color: var(--muted); font-size: 13px; }
+
+    .file-label:hover {
+        border-color: rgba(110, 231, 255, 0.45);
+        transform: translateY(-1px);
+    }
+
+    .file-name {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+    }
 
     .full-width-btn {
         display: block;
         width: 100%;
-        margin-top: 16px;
-        background: var(--accent);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 12px;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
+        margin-top: 12px;
+        background: linear-gradient(135deg, var(--accent-2), var(--accent));
+        color: #061922;
+        box-shadow: 0 16px 28px rgba(124, 156, 255, 0.28);
     }
-    .full-width-btn:disabled { background: #2a2e38; color: var(--muted); cursor: not-allowed; }
-    .full-width-btn:not(:disabled):hover { opacity: 0.85; }
 
-    .upload-result { margin-top: 20px; }
+    .full-width-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }
+
+    .upload-result {
+        margin-top: 20px;
+    }
+
     .annotated-img {
+        display: block;
         max-width: 100%;
-        border-radius: 8px;
-        display: block;
-        margin-bottom: 16px;
-        border: 1px solid #2a2e38;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 10px 24px rgba(0,0,0,0.22);
+        margin-bottom: 18px;
     }
+
     .number-string {
-        font-size: 40px;
-        font-weight: 700;
-        color: var(--accent);
-        letter-spacing: 6px;
+        font-size: clamp(2rem, 4vw, 3.2rem);
         margin-bottom: 16px;
-    }
-    .digit-chips { display: flex; flex-wrap: wrap; gap: 10px; }
-    .digit-chip {
-        background: #2a2e38;
-        border-radius: 8px;
-        padding: 8px 14px;
-        text-align: center;
-        min-width: 48px;
-    }
-    .digit-chip .chip-digit {
-        font-size: 20px;
-        font-weight: 700;
+        letter-spacing: 0.18em;
+        font-weight: 800;
         color: var(--accent);
-        display: block;
     }
-    .digit-chip .chip-conf { color: var(--muted); font-size: 11px; }
-    .upload-error { color: #ff6b6b; font-size: 14px; }
+
+    .digit-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .digit-chip {
+        min-width: 72px;
+        padding: 10px 12px;
+        text-align: center;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+    }
+
+    .chip-digit {
+        display: block;
+        font-size: 1.3rem;
+        font-weight: 800;
+        color: var(--accent);
+        margin-bottom: 2px;
+    }
+
+    .chip-conf {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+    }
+
+    .upload-error {
+        color: var(--danger);
+        font-size: 0.93rem;
+        margin: 0;
+    }
+
+    #webcam-wrapper {
+        position: relative;
+        width: min(100%, 620px);
+        border-radius: 20px;
+        overflow: hidden;
+        background: #010d14;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: inset 0 0 0 1px rgba(110, 231, 255, 0.08);
+    }
+
+    #webcam-video {
+        display: block;
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        background: #010d14;
+    }
+
+    #webcam-overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+
+    .webcam-buttons {
+        margin-top: 16px;
+    }
+
+    #webcam-status {
+        margin: 12px 0 0;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+    }
+
+    @media (max-width: 920px) {
+        .workspace {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    @media (max-width: 560px) {
+        body {
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+
+        .topbar {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+
+        .buttons {
+            flex-direction: column;
+        }
+
+        .upload-controls {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+    }
 </style>
 </head>
 <body>
-
-<h1>Demo: Nhận diện chữ số viết tay</h1>
-<p class="subtitle">CNN huấn luyện trên MNIST · Project III</p>
-
-<div class="container">
-    <div class="panel">
-        <canvas id="canvas" width="280" height="280"></canvas>
-        <div class="buttons">
-            <button id="clearBtn">Xóa</button>
-            <button id="predictBtn">Dự đoán</button>
+<div class="page-shell">
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark">MN</div>
+            <div>
+                <h1>Handwritten Digit Recognition</h1>
+            </div>
         </div>
-    </div>
+        <div class="status-pill"><span class="dot"></span> Model Ready</div>
+    </header>
 
-    <div class="panel result-panel">
-        <div id="prediction-display">?</div>
-        <div id="confidence-text">Vẽ 1 chữ số rồi bấm "Dự đoán"</div>
-        <div id="prob-bars"></div>
-    </div>
-</div>
+    <main class="workspace">
+        <section class="card draw-card">
+            <div class="panel-header">
+                <h2>Sketch Panel</h2>
+                <span class="mini-tag">28 × 28</span>
+            </div>
 
-<div class="panel upload-panel">
-    <h2 class="panel-title">Tải ảnh lên · nhận diện nhiều chữ số</h2>
-    <p class="panel-desc">Chọn ảnh chụp/scan chứa 1 hoặc nhiều chữ số viết tay.</p>
+            <div class="canvas-wrap">
+                <canvas id="canvas" width="280" height="280"></canvas>
+            </div>
 
-    <input type="file" id="imageInput" accept="image/*" hidden>
-    <label for="imageInput" class="file-label">Chọn ảnh</label>
-    <span id="fileName" class="file-name">Chưa chọn file nào</span>
+            <div class="buttons">
+                <button id="clearBtn">Clear</button>
+                <button id="predictBtn">Predict</button>
+            </div>
+        </section>
 
-    <button id="uploadPredictBtn" class="full-width-btn" disabled>Nhận diện</button>
+        <aside class="card result-card">
+            <div class="result-header">Prediction</div>
+            <div id="prediction-display">?</div>
+            <div id="confidence-text">Draw a digit and press Predict</div>
+            <div id="prob-bars"></div>
+        </aside>
+    </main>
 
-    <div id="uploadResult" class="upload-result"></div>
+    <section class="card upload-card">
+        <h2 class="panel-title">Image Recognition</h2>
+        <p class="panel-desc">Upload a photo containing one or more handwritten digits to identify them automatically.</p>
+
+        <div class="upload-controls">
+            <input type="file" id="imageInput" accept="image/*" hidden>
+            <label for="imageInput" class="file-label">Choose Image</label>
+            <span id="fileName" class="file-name">No file selected</span>
+        </div>
+
+        <button id="uploadPredictBtn" class="full-width-btn" disabled>Recognize</button>
+        <div id="uploadResult" class="upload-result"></div>
+    </section>
+
+    <section class="card webcam-card">
+        <h2 class="panel-title">Live Webcam Recognition</h2>
+        <p class="panel-desc">Enable your camera and show a handwritten digit on paper to perform real-time recognition.</p>
+
+        <div id="webcam-wrapper">
+            <video id="webcam-video" autoplay playsinline muted></video>
+            <canvas id="webcam-overlay"></canvas>
+        </div>
+
+        <div class="buttons webcam-buttons">
+            <button id="webcamToggleBtn" class="full-width-btn">Turn on camera</button>
+        </div>
+
+        <p id="webcam-status">Camera is off.</p>
+    </section>
 </div>
 
 <script>
@@ -277,14 +600,14 @@ canvas.addEventListener("touchend", stopDraw);
 document.getElementById("clearBtn").addEventListener("click", () => {
     initCanvas();
     document.getElementById("prediction-display").textContent = "?";
-    document.getElementById("confidence-text").textContent = 'Vẽ 1 chữ số rồi bấm "Dự đoán"';
+    document.getElementById("confidence-text").textContent = 'Draw 1 digit and click "Predict"';
     document.getElementById("prob-bars").innerHTML = "";
 });
 
 document.getElementById("predictBtn").addEventListener("click", async () => {
     const dataUrl = canvas.toDataURL("image/png");
 
-    document.getElementById("confidence-text").textContent = "Đang dự đoán...";
+    document.getElementById("confidence-text").textContent = "Predicting...";
 
     try {
         const res = await fetch("/predict", {
@@ -374,6 +697,136 @@ uploadPredictBtn.addEventListener("click", async () => {
         uploadPredictBtn.disabled = false;
     }
 });
+// ---- Webcam: nhận diện thời gian thực (Phần 1 + Phần 3) ----
+(function () {
+    const video = document.getElementById("webcam-video");
+    const overlay = document.getElementById("webcam-overlay");
+    const toggleBtn = document.getElementById("webcamToggleBtn");
+    const statusEl = document.getElementById("webcam-status");
+
+    // Canvas ẩn, chỉ dùng để "chụp" 1 frame từ video rồi encode gửi lên server
+    // (không gắn vào DOM, không hiển thị cho người dùng thấy)
+    const captureCanvas = document.createElement("canvas");
+    const captureCtx = captureCanvas.getContext("2d");
+
+    const FRAME_INTERVAL_MS = 500; // 2 frame/giây - Phần 4 sẽ tinh chỉnh lại nếu cần
+
+    let stream = null;
+    let isRunning = false;
+    let isProcessing = false; // cờ chống gửi chồng request khi request trước chưa xong
+    let intervalId = null;
+
+    async function startCamera() {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false,
+            });
+            video.srcObject = stream;
+
+            // Đợi video có kích thước thật rồi mới set canvas khớp kích thước
+            await new Promise((resolve) => { video.onloadedmetadata = resolve; });
+            await video.play();
+
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+            captureCanvas.width = video.videoWidth;
+            captureCanvas.height = video.videoHeight;
+
+            isRunning = true;
+            toggleBtn.textContent = "Tắt camera";
+            statusEl.textContent = "Đang nhận diện...";
+
+            intervalId = setInterval(processFrame, FRAME_INTERVAL_MS);
+        } catch (err) {
+            console.error("Không thể truy cập camera:", err);
+            statusEl.textContent =
+                "Lỗi: không truy cập được camera. Kiểm tra quyền camera cho trình duyệt.";
+        }
+    }
+
+    function stopCamera() {
+        if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = null;
+        }
+        if (stream) {
+            stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+        }
+        video.srcObject = null;
+        isRunning = false;
+        toggleBtn.textContent = "Bật camera";
+        statusEl.textContent = "Camera đang tắt.";
+        clearOverlay();
+    }
+
+    function clearOverlay() {
+        const ctx = overlay.getContext("2d");
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+    }
+
+    async function processFrame() {
+        // Nếu request trước chưa có kết quả trả về thì bỏ qua lượt này,
+        // tránh dồn request khi mạng/xử lý chậm hơn tốc độ gửi
+        if (isProcessing || !isRunning) return;
+        isProcessing = true;
+
+        captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+        const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.8); // nén nhẹ, gửi nhanh hơn PNG
+
+        try {
+            const res = await fetch("/predict_frame", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ image: dataUrl }),
+            });
+            const result = await res.json();
+            const digits = result.digits || [];
+
+            drawOverlay(digits);
+            statusEl.textContent = digits.length > 0
+                ? `Phát hiện ${digits.length} chữ số`
+                : "Chưa phát hiện chữ số nào trong khung hình";
+        } catch (err) {
+            console.error("predict_frame error:", err);
+            statusEl.textContent = "Lỗi kết nối server khi xử lý frame.";
+        } finally {
+            isProcessing = false;
+        }
+    }
+
+    function drawOverlay(digits) {
+        const ctx = overlay.getContext("2d");
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#4f8cff";
+        ctx.font = "bold 20px -apple-system, sans-serif";
+
+        digits.forEach((d) => {
+            const [x, y, w, h] = d.bbox;
+            ctx.strokeRect(x, y, w, h);
+
+            const label = `${d.digit} · ${d.confidence.toFixed(0)}%`;
+            const textWidth = ctx.measureText(label).width;
+            const labelY = y - 10 > 24 ? y - 10 : y + h + 26;
+
+            ctx.fillStyle = "#4f8cff";
+            ctx.fillRect(x, labelY - 24, textWidth + 16, 28);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillText(label, x + 8, labelY - 3);
+        });
+    }
+
+    toggleBtn.addEventListener("click", () => {
+        if (isRunning) stopCamera();
+        else startCamera();
+    });
+
+    // Tắt camera khi rời trang, tránh đèn camera sáng liên tục
+    window.addEventListener("beforeunload", stopCamera);
+})();
 </script>
 
 </body>
