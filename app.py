@@ -25,6 +25,15 @@ app = Flask(__name__)
 MODEL_PATH = "outputs/best_model.pth"
 MNIST_MEAN, MNIST_STD = 0.1307, 0.3081
 
+# Model chỉ có 10 lớp (0-9), không có khái niệm "không phải chữ số" - nên
+# với ảnh có lẫn chữ cái/ký tự khác, model vẫn ép ra 1 số với 1 độ tin cậy
+# nào đó. Ngưỡng này lọc bớt các dự đoán quá thiếu chắc chắn (nhiều khả
+# năng không phải chữ số thật). KHÔNG loại bỏ hoàn toàn được vấn đề, vì
+# vài ký tự có hình dạng trùng chữ số thật sự (vd. "S"≈5, "O"≈0) vẫn có
+# thể được dự đoán với confidence cao - đây là giới hạn cố hữu của bài
+# toán phân loại 10 lớp, không phải lỗi code.
+CONFIDENCE_THRESHOLD = 60.0
+
 device = torch.device("cpu")  # inference 1 ảnh nhỏ, CPU đủ nhanh, không cần MPS/CUDA
 model = MnistCNN().to(device)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
@@ -101,19 +110,58 @@ def load_and_normalize_image(file_bytes: bytes):
     return img_color, gray
 
 
-def segment_digits(gray: np.ndarray, min_area_ratio: float = 0.0004):
+def segment_digits(
+    gray: np.ndarray,
+    min_area_ratio: float = 0.0005,
+    min_height_ratio: float = 0.03,
+    max_area_ratio: float = 0.5,
+    max_aspect_ratio: float = 1.6,
+    min_extent: float = 0.12,
+):
     """
     Tách từng chữ số trong ảnh xám (đã chuẩn hóa nét sáng/nền tối).
+
+    Dùng ADAPTIVE THRESHOLD (so sánh mỗi pixel với vùng lân cận) thay vì
+    Otsu toàn cục - quan trọng khi chụp giấy kẻ ô ly hoặc ánh sáng không
+    đều (đặc biệt qua webcam): Otsu dễ nhận nhầm cả lưới kẻ ô thành "nét vẽ",
+    hoặc làm vỡ nét bút mảnh thành nhiều mảnh rời rạc (mỗi mảnh bị coi là
+    1 "chữ số" khác nhau -> bounding box nhỏ vụn, dự đoán sai/nhảy loạn).
+
+    max_aspect_ratio: lọc theo tỉ lệ rộng/cao của box. 1 chữ số viết tay
+    hầu như luôn có w/h <= ~1.6 (kể cả "4", "7" viết hơi ngang). Cụm nhiều
+    ký tự dính liền nhau (1 từ, dãy chữ cái) thường tạo ra box dẹt ngang
+    hơn hẳn -> lọc bớt được nhiều trường hợp nhận nhầm chữ cái/từ thành số.
+
+    min_extent: lọc theo "độ đặc" = diện tích nét chữ / diện tích khung
+    bao. 1 chữ số viết tay có nét khá đặc trong khung của nó; 1 cụm ký tự
+    nối liền (chữ thảo, từ) thường "loãng" hơn (khung to nhưng nét mỏng
+    rải khắp) -> giá trị extent thấp hơn hẳn.
+
+    Cả 2 ngưỡng trên là heuristic (kinh nghiệm), không phải giải pháp
+    triệt để - model gốc vẫn chỉ phân loại được 0-9 nên không thể phân
+    biệt 100% số thật với ký tự có hình dạng tương tự.
 
     Trả về danh sách dict {"bbox": (x, y, w, h), "crop": ảnh xám đã crop sát
     từng số}, sắp xếp theo thứ tự trái sang phải.
     """
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Làm liền nét (nối các đoạn nét bị đứt do threshold), giảm nhiễu
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # blockSize=31: kích thước vùng lân cận để tính ngưỡng cục bộ (phải là số lẻ)
+    # C=-15 (offset âm): pixel phải sáng hơn trung bình vùng lân cận ít nhất
+    # 15 mức xám mới được coi là "nét vẽ" - giúp loại lưới kẻ ô nhạt, giữ
+    # lại nét mực đậm
+    mask = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
+        blockSize=31, C=-15,
+    )
+
+    # Phép mở (opening): xóa các đốm nhiễu rất nhỏ/mảnh (vd. lưới kẻ ô còn sót)
+    kernel_open = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+
+    # Phép đóng (closing): nối liền các đoạn nét chữ bị đứt quãng do threshold
+    kernel_close = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=2)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -123,11 +171,29 @@ def segment_digits(gray: np.ndarray, min_area_ratio: float = 0.0004):
     boxes = []
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        # Lọc nhiễu: đốm quá nhỏ (bụi, vết bẩn) hoặc quá mảnh
-        if w * h < img_area * min_area_ratio:
+        area_bbox = w * h
+
+        # Lọc nhiễu: đốm quá nhỏ (bụi, vết bẩn, mảnh vụn còn sót của lưới kẻ)
+        if area_bbox < img_area * min_area_ratio:
             continue
-        if h < 10 or w < 4:
+        # Lọc theo chiều cao tối thiểu so với khung hình: loại các mảnh vụn
+        # li ti, giữ lại các nét đủ lớn để thực sự là 1 chữ số
+        if h < img_h * min_height_ratio:
             continue
+        # An toàn: loại box chiếm gần hết khung hình (dấu hiệu threshold
+        # "vỡ trận", cả khung hình dính thành 1 khối - không phải chữ số)
+        if area_bbox > img_area * max_area_ratio:
+            continue
+        # Loại box quá dẹt ngang: nghi là cụm nhiều ký tự dính liền (từ)
+        # chứ không phải 1 chữ số đơn lẻ
+        if (w / h) > max_aspect_ratio:
+            continue
+        # Loại box có nét quá "loãng" so với diện tích khung: đặc trưng
+        # của chữ thảo/từ nối liền hơn là 1 chữ số đặc
+        extent = cv2.contourArea(cnt) / area_bbox if area_bbox > 0 else 0
+        if extent < min_extent:
+            continue
+
         boxes.append((x, y, w, h))
 
     boxes.sort(key=lambda b: b[0])  # trái -> phải
@@ -209,6 +275,7 @@ def predict_image():
     digits_result = []
     annotated = img_color.copy()
     box_color = (255, 140, 79)  # BGR - tương ứng #4f8cff (màu accent trên UI)
+    rejected_color = (120, 120, 120)  # xám - box bị loại vì confidence thấp
 
     for seg in segments:
         x, y, w, h = seg["bbox"]
@@ -218,19 +285,28 @@ def predict_image():
             probs = F.softmax(model(tensor), dim=1).squeeze(0).cpu().numpy()
         digit = int(np.argmax(probs))
         conf = round(float(probs[digit]) * 100, 2)
+
+        if conf < CONFIDENCE_THRESHOLD:
+            # Không đủ tin cậy để tính là chữ số - vẫn vẽ khung xám để biết
+            # vùng này đã bị phát hiện nhưng bị loại, không lặng lẽ bỏ qua
+            cv2.rectangle(annotated, (x, y), (x + w, y + h), rejected_color, 2)
+            cv2.putText(annotated, "?", (x + 5, y - 8 if y > 20 else y + h + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, rejected_color, 2)
+            continue
+
         digits_result.append({
             "digit": digit,
             "confidence": conf,
             "bbox": [int(x), int(y), int(w), int(h)],
         })
 
-        # Vẽ khung + nhãn dự đoán đè lên ảnh gốc
+        # Vẽ khung + nhãn dự đoán (kèm độ tin cậy) đè lên ảnh gốc
         cv2.rectangle(annotated, (x, y), (x + w, y + h), box_color, 3)
-        label = str(digit)
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        label = f"{digit} - {conf:.0f}%"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
         label_y = y - 10 if y - 10 - th > 0 else y + h + th + 10
         cv2.rectangle(annotated, (x, label_y - th - 6), (x + tw + 10, label_y + 6), box_color, -1)
-        cv2.putText(annotated, label, (x + 5, label_y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        cv2.putText(annotated, label, (x + 5, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
     _, buf = cv2.imencode(".png", annotated)
     annotated_b64 = "data:image/png;base64," + base64.b64encode(buf).decode("utf-8")
@@ -286,6 +362,10 @@ def predict_frame():
 
         digit = int(np.argmax(probs))
         conf = round(float(probs[digit]) * 100, 2)
+
+        if conf < CONFIDENCE_THRESHOLD:
+            continue  # không đủ tin cậy - bỏ qua, tránh nhấp nháy số sai trên overlay
+
         digits_result.append({
             "digit": digit,
             "confidence": conf,
