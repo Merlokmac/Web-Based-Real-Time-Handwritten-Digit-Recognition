@@ -110,109 +110,142 @@ def load_and_normalize_image(file_bytes: bytes):
     return img_color, gray
 
 
+def normalize_gray_image(gray: np.ndarray) -> np.ndarray:
+    """Chuẩn hóa ảnh xám để giảm nhiễu, cân bằng độ sáng và giữ nét chữ rõ hơn."""
+    gray = gray.astype(np.uint8)
+
+    # Nếu nền sáng chiếm đa số, đảo ảnh để chuyển về quy ước MNIST: chữ nét đậm trên nền tối.
+    if np.mean(gray) > 127:
+        gray = 255 - gray
+
+    gray = cv2.medianBlur(gray, 3)
+
+    # Tăng độ tương phản cục bộ để xử lý nền chụp mờ hoặc ảnh thiếu sáng.
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # Cân bằng lại độ sáng toàn cục nhưng tránh làm vỡ nét chữ.
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    return gray
+
+
 def segment_digits(
     gray: np.ndarray,
-    min_area_ratio: float = 0.0005,
-    min_height_ratio: float = 0.03,
-    max_area_ratio: float = 0.5,
-    max_aspect_ratio: float = 1.6,
-    min_extent: float = 0.12,
+    min_area_ratio: float = 0.00005,
+    min_height_ratio: float = 0.008,
+    max_area_ratio: float = 0.9,
+    max_aspect_ratio: float = 4.0,
+    min_extent: float = 0.03,
+    min_solidity: float = 0.08,
 ):
-    """
-    Tách từng chữ số trong ảnh xám (đã chuẩn hóa nét sáng/nền tối).
-
-    Dùng ADAPTIVE THRESHOLD (so sánh mỗi pixel với vùng lân cận) thay vì
-    Otsu toàn cục - quan trọng khi chụp giấy kẻ ô ly hoặc ánh sáng không
-    đều (đặc biệt qua webcam): Otsu dễ nhận nhầm cả lưới kẻ ô thành "nét vẽ",
-    hoặc làm vỡ nét bút mảnh thành nhiều mảnh rời rạc (mỗi mảnh bị coi là
-    1 "chữ số" khác nhau -> bounding box nhỏ vụn, dự đoán sai/nhảy loạn).
-
-    max_aspect_ratio: lọc theo tỉ lệ rộng/cao của box. 1 chữ số viết tay
-    hầu như luôn có w/h <= ~1.6 (kể cả "4", "7" viết hơi ngang). Cụm nhiều
-    ký tự dính liền nhau (1 từ, dãy chữ cái) thường tạo ra box dẹt ngang
-    hơn hẳn -> lọc bớt được nhiều trường hợp nhận nhầm chữ cái/từ thành số.
-
-    min_extent: lọc theo "độ đặc" = diện tích nét chữ / diện tích khung
-    bao. 1 chữ số viết tay có nét khá đặc trong khung của nó; 1 cụm ký tự
-    nối liền (chữ thảo, từ) thường "loãng" hơn (khung to nhưng nét mỏng
-    rải khắp) -> giá trị extent thấp hơn hẳn.
-
-    Cả 2 ngưỡng trên là heuristic (kinh nghiệm), không phải giải pháp
-    triệt để - model gốc vẫn chỉ phân loại được 0-9 nên không thể phân
-    biệt 100% số thật với ký tự có hình dạng tương tự.
-
-    Trả về danh sách dict {"bbox": (x, y, w, h), "crop": ảnh xám đã crop sát
-    từng số}, sắp xếp theo thứ tự trái sang phải.
-    """
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # blockSize=31: kích thước vùng lân cận để tính ngưỡng cục bộ (phải là số lẻ)
-    # C=-15 (offset âm): pixel phải sáng hơn trung bình vùng lân cận ít nhất
-    # 15 mức xám mới được coi là "nét vẽ" - giúp loại lưới kẻ ô nhạt, giữ
-    # lại nét mực đậm
-    mask = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
-        blockSize=31, C=-15,
-    )
-
-    # Phép mở (opening): xóa các đốm nhiễu rất nhỏ/mảnh (vd. lưới kẻ ô còn sót)
-    kernel_open = np.ones((2, 2), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-
-    # Phép đóng (closing): nối liền các đoạn nét chữ bị đứt quãng do threshold
-    kernel_close = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=2)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+    """Tách vùng chữ số cho cả ảnh cầm tay nhỏ và ảnh chụp thực tế. Mục tiêu là không lọc quá chặt như các phiên bản trước."""
+    gray = normalize_gray_image(gray)
     img_h, img_w = gray.shape
     img_area = img_h * img_w
 
+    def _collect_boxes(mask: np.ndarray):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        boxes = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area <= 0:
+                continue
+
+            x, y, w, h = cv2.boundingRect(cnt)
+            area_bbox = w * h
+            if area_bbox <= 0:
+                continue
+            if w < 2 or h < 2:
+                continue
+            if area_bbox < img_area * min_area_ratio:
+                continue
+            if h < img_h * min_height_ratio:
+                continue
+            if area_bbox > img_area * max_area_ratio:
+                continue
+            if w / h > max_aspect_ratio:
+                continue
+            if h / w > 6.0:
+                continue
+            if area / area_bbox < min_extent:
+                continue
+
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            if hull_area > 0 and area / hull_area < min_solidity:
+                continue
+
+            boxes.append((x, y, w, h))
+        return boxes
+
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    masks = []
+
+    # Dùng nhiều ngưỡng để giữ trường hợp hình chụp có chữ rất nhòe hoặc chữ sáng/đậm khác nhau.
+    thresholds = [
+        int(np.clip(np.percentile(blurred, 10), 20, 140)),
+        int(np.clip(np.percentile(blurred, 25), 30, 170)),
+        int(np.clip(np.percentile(blurred, 40), 40, 200)),
+        int(np.clip(np.percentile(blurred, 60), 60, 220)),
+        128,
+    ]
+
+    for t in sorted(set(thresholds)):
+        _, dark_on_light = cv2.threshold(blurred, t, 255, cv2.THRESH_BINARY_INV)
+        _, light_on_dark = cv2.threshold(blurred, t, 255, cv2.THRESH_BINARY)
+        masks.extend([dark_on_light, light_on_dark])
+
+    adaptive_inv = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV,
+        blockSize=31, C=8,
+    )
+    adaptive = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
+        blockSize=31, C=8,
+    )
+    masks.extend([adaptive_inv, adaptive])
+
     boxes = []
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        area_bbox = w * h
+    for mask in masks:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+        boxes.extend(_collect_boxes(mask))
 
-        # Lọc nhiễu: đốm quá nhỏ (bụi, vết bẩn, mảnh vụn còn sót của lưới kẻ)
-        if area_bbox < img_area * min_area_ratio:
-            continue
-        # Lọc theo chiều cao tối thiểu so với khung hình: loại các mảnh vụn
-        # li ti, giữ lại các nét đủ lớn để thực sự là 1 chữ số
-        if h < img_h * min_height_ratio:
-            continue
-        # An toàn: loại box chiếm gần hết khung hình (dấu hiệu threshold
-        # "vỡ trận", cả khung hình dính thành 1 khối - không phải chữ số)
-        if area_bbox > img_area * max_area_ratio:
-            continue
-        # Loại box quá dẹt ngang: nghi là cụm nhiều ký tự dính liền (từ)
-        # chứ không phải 1 chữ số đơn lẻ
-        if (w / h) > max_aspect_ratio:
-            continue
-        # Loại box có nét quá "loãng" so với diện tích khung: đặc trưng
-        # của chữ thảo/từ nối liền hơn là 1 chữ số đặc
-        extent = cv2.contourArea(cnt) / area_bbox if area_bbox > 0 else 0
-        if extent < min_extent:
-            continue
+    if not boxes:
+        return []
 
-        boxes.append((x, y, w, h))
-
-    boxes.sort(key=lambda b: b[0])  # trái -> phải
+    # Gộp các box chồng nhau nhưng không loại quá nhiều trường hợp.
+    boxes = sorted(boxes, key=lambda b: (b[0], b[1]))
+    merged = []
+    for box in boxes:
+        x, y, w, h = box
+        placed = False
+        for i, (mx, my, mw, mh) in enumerate(merged):
+            if x < mx + mw and x + w > mx and y < my + mh and y + h > my:
+                if w * h > mw * mh:
+                    merged[i] = (x, y, w, h)
+                placed = True
+                break
+        if not placed:
+            merged.append(box)
 
     segments = []
-    for (x, y, w, h) in boxes:
-        pad = max(3, int(0.15 * max(w, h)))
+    for (x, y, w, h) in merged:
+        pad = max(2, int(0.15 * max(w, h)))
         y0, y1 = max(0, y - pad), min(img_h, y + h + pad)
         x0, x1 = max(0, x - pad), min(img_w, x + w + pad)
 
-        # Crop từ ảnh xám gốc (giữ độ mượt của nét), chỉ giữ vùng thuộc
-        # mask của chính chữ số này để tránh lẫn nét từ số bên cạnh
         crop_gray = gray[y0:y1, x0:x1]
-        crop_mask = mask[y0:y1, x0:x1]
+        crop_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+        crop_mask[max(0, y - y0):max(0, y - y0) + h, max(0, x - x0):max(0, x - x0) + w] = 255
         crop = cv2.bitwise_and(crop_gray, crop_mask)
+
+        if crop.size == 0 or cv2.countNonZero(crop_mask) < 2:
+            continue
 
         segments.append({"bbox": (x, y, w, h), "crop": crop})
 
-    return segments
+    return sorted(segments, key=lambda s: s["bbox"][0])
 
 
 def preprocess_digit_crop(crop: np.ndarray) -> torch.Tensor:
