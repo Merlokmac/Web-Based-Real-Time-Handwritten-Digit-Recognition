@@ -1,18 +1,3 @@
-"""
-Script huấn luyện và đánh giá CNN trên MNIST.
-
-Cách chạy:
-    python train.py                      # cấu hình mặc định
-    python train.py --epochs 15 --batch-size 64 --lr 0.0005
-
-Kết quả sau khi chạy xong (lưu trong thư mục ./outputs):
-    - best_model.pth        : trọng số mô hình tốt nhất (theo test accuracy)
-    - training_curves.png   : biểu đồ loss/accuracy theo epoch
-    - confusion_matrix.png  : ma trận nhầm lẫn trên tập test
-    - classification_report.txt : precision/recall/f1 từng lớp
-    - training_log.txt      : log chi tiết từng epoch
-"""
-
 import argparse
 import time
 from pathlib import Path
