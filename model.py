@@ -26,10 +26,10 @@ class MnistCNN(nn.Module):
         self.conv_block1 = nn.Sequential(
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),  # 28x28 -> 14x14
         )
 
@@ -37,10 +37,10 @@ class MnistCNN(nn.Module):
         self.conv_block2 = nn.Sequential(
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),  # 14x14 -> 7x7
         )
 
@@ -49,7 +49,7 @@ class MnistCNN(nn.Module):
             nn.Flatten(),
             nn.Dropout(0.5),
             nn.Linear(64 * 7 * 7, 128),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Dropout(0.3),
             nn.Linear(128, num_classes),
         )
