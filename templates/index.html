@@ -406,6 +406,40 @@
         margin: 0;
     }
 
+    /* Vùng xem trước ảnh đã chọn, có vạch kẻ chia GRID_COLS cột để người
+       dùng canh mỗi chữ số vào đúng 1 cột trước khi bấm "Recognize" - khớp
+       với cách backend chia ảnh thành GRID_COLS cột dọc cố định. */
+    .image-preview-wrap {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+        margin-bottom: 16px;
+        border-radius: 18px;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 10px 24px rgba(0,0,0,0.22);
+    }
+
+    #previewImg {
+        display: block;
+        max-width: 100%;
+        max-height: 360px;
+    }
+
+    #gridOverlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+
+    .preview-hint {
+        color: var(--text-muted);
+        font-size: 0.82rem;
+        margin: 0 0 14px;
+    }
+
     #webcam-wrapper {
         position: relative;
         width: min(100%, 620px);
@@ -433,6 +467,41 @@
 
     .webcam-buttons {
         margin-top: 16px;
+    }
+
+    .webcam-digits {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        min-height: 86px;
+        margin: 18px 0 10px;
+    }
+
+    .webcam-digit-card {
+        min-width: 85px;
+        padding: 10px 12px 8px;
+        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(17, 38, 49, 0.75);
+        text-align: center;
+        box-shadow: inset 0 0 0 1px rgba(110, 231, 255, 0.05);
+    }
+
+    .webcam-digit-card .digit {
+        display: block;
+        font-size: clamp(1.3rem, 2vw, 2rem);
+        font-weight: 800;
+        line-height: 1.1;
+        color: var(--accent);
+        letter-spacing: 0.04em;
+    }
+
+    .webcam-digit-card .confidence {
+        display: block;
+        margin-top: 6px;
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
     }
 
     #webcam-status {
@@ -516,18 +585,24 @@
             <span id="fileName" class="file-name">No file selected</span>
         </div>
 
+        <div class="image-preview-wrap" id="imagePreviewWrap" style="display:none;">
+            <img id="previewImg" alt="Ảnh đã chọn">
+        </div>
+
         <button id="uploadPredictBtn" class="full-width-btn" disabled>Recognize</button>
         <div id="uploadResult" class="upload-result"></div>
     </section>
 
     <section class="card webcam-card">
         <h2 class="panel-title">Live Webcam Recognition</h2>
-        <p class="panel-desc">Enable your camera and show a handwritten digit on paper to perform real-time recognition.</p>
+        <p class="panel-desc">Enable your camera and keep one handwritten digit in the focus area for real-time recognition.</p>
 
         <div id="webcam-wrapper">
             <video id="webcam-video" autoplay playsinline muted></video>
             <canvas id="webcam-overlay"></canvas>
         </div>
+
+        <div id="webcam-digits" class="webcam-digits" aria-live="polite"></div>
 
         <div class="buttons webcam-buttons">
             <button id="webcamToggleBtn" class="full-width-btn">Turn on camera</button>
@@ -638,30 +713,48 @@ document.getElementById("predictBtn").addEventListener("click", async () => {
         }
     } catch (err) {
         document.getElementById("confidence-text").textContent =
-            "Lỗi: không kết nối được server. Kiểm tra app.py đang chạy chưa.";
+            "Error: Could not connect to server.";
         console.error(err);
     }
 });
 
 // ---- Upload ảnh: nhận diện nhiều chữ số ----
+// GRID_COLS phải khớp với hằng số GRID_COLS trong app.py (backend chia ảnh
+// thành đúng ngần này cột dọc cố định) - nếu đổi 1 bên thì phải đổi cả 2.
+const GRID_COLS = 8;
+
 const imageInput = document.getElementById("imageInput");
 const fileNameEl = document.getElementById("fileName");
 const uploadPredictBtn = document.getElementById("uploadPredictBtn");
 const uploadResult = document.getElementById("uploadResult");
+const imagePreviewWrap = document.getElementById("imagePreviewWrap");
+const previewImg = document.getElementById("previewImg");
 
 let selectedFile = null;
 
 imageInput.addEventListener("change", () => {
     selectedFile = imageInput.files[0] || null;
-    fileNameEl.textContent = selectedFile ? selectedFile.name : "Chưa chọn file nào";
+    fileNameEl.textContent = selectedFile ? selectedFile.name : "No file chosen";
     uploadPredictBtn.disabled = !selectedFile;
     uploadResult.innerHTML = "";
+
+    if (!selectedFile) {
+        imagePreviewWrap.style.display = "none";
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        previewImg.src = e.target.result;
+        imagePreviewWrap.style.display = "inline-block";
+    };
+    reader.readAsDataURL(selectedFile);
 });
 
 uploadPredictBtn.addEventListener("click", async () => {
     if (!selectedFile) return;
 
-    uploadResult.innerHTML = '<p class="panel-desc">Đang xử lý ảnh...</p>';
+    uploadResult.innerHTML = '<p class="panel-desc">Processing image...</p>';
     uploadPredictBtn.disabled = true;
 
     const formData = new FormData();
@@ -686,12 +779,12 @@ uploadPredictBtn.addEventListener("click", async () => {
         });
 
         uploadResult.innerHTML = `
-            <img class="annotated-img" src="${result.annotated_image}" alt="Kết quả nhận diện">
+            <img class="annotated-img" src="${result.annotated_image}" alt="Recognition Result">
             <div class="number-string">${result.number_string}</div>
             <div class="digit-chips">${chipsHtml}</div>
         `;
     } catch (err) {
-        uploadResult.innerHTML = '<p class="upload-error">Lỗi kết nối server.</p>';
+        uploadResult.innerHTML = '<p class="upload-error">Error connecting to server.</p>';
         console.error(err);
     } finally {
         uploadPredictBtn.disabled = false;
@@ -703,6 +796,7 @@ uploadPredictBtn.addEventListener("click", async () => {
     const overlay = document.getElementById("webcam-overlay");
     const toggleBtn = document.getElementById("webcamToggleBtn");
     const statusEl = document.getElementById("webcam-status");
+    const webcamDigitsEl = document.getElementById("webcam-digits");
 
     // Canvas ẩn, chỉ dùng để "chụp" 1 frame từ video rồi encode gửi lên server
     // (không gắn vào DOM, không hiển thị cho người dùng thấy)
@@ -711,10 +805,22 @@ uploadPredictBtn.addEventListener("click", async () => {
 
     const FRAME_INTERVAL_MS = 500; // 2 frame/giây - Phần 4 sẽ tinh chỉnh lại nếu cần
 
+    // Phải khớp với WEBCAM_ROI_RATIO trong app.py (tỉ lệ rộng, cao của khung
+    // ROI cố định so với khung hình) - dùng để vẽ khung hướng dẫn ngay khi
+    // bật camera, trước khi có kết quả trả về từ server lần đầu.
+    const WEBCAM_ROI_RATIO = [0.5, 0.6];
+
     let stream = null;
     let isRunning = false;
     let isProcessing = false; // cờ chống gửi chồng request khi request trước chưa xong
     let intervalId = null;
+
+    function computeDefaultRoiBbox() {
+        const [wRatio, hRatio] = WEBCAM_ROI_RATIO;
+        const w = overlay.width * wRatio;
+        const h = overlay.height * hRatio;
+        return [(overlay.width - w) / 2, (overlay.height - h) / 2, w, h];
+    }
 
     async function startCamera() {
         try {
@@ -734,14 +840,18 @@ uploadPredictBtn.addEventListener("click", async () => {
             captureCanvas.height = video.videoHeight;
 
             isRunning = true;
-            toggleBtn.textContent = "Tắt camera";
-            statusEl.textContent = "Đang nhận diện...";
+            toggleBtn.textContent = "Turn off camera";
+            statusEl.textContent = "Recognizing";
+
+            // Không vẽ khung hướng dẫn lớn ở giữa video; chỉ hiển thị box nhận diện
+            // thực sự của chữ số và độ tin cậy sau khi có kết quả từ server.
+            drawOverlay([], null);
 
             intervalId = setInterval(processFrame, FRAME_INTERVAL_MS);
         } catch (err) {
-            console.error("Không thể truy cập camera:", err);
+            console.error("Cannot access camera:", err);
             statusEl.textContent =
-                "Lỗi: không truy cập được camera. Kiểm tra quyền camera cho trình duyệt.";
+                "Error: Cannot access camera. Please check camera permissions for the browser.";
         }
     }
 
@@ -756,8 +866,8 @@ uploadPredictBtn.addEventListener("click", async () => {
         }
         video.srcObject = null;
         isRunning = false;
-        toggleBtn.textContent = "Bật camera";
-        statusEl.textContent = "Camera đang tắt.";
+        toggleBtn.textContent = "Turn on camera";
+        statusEl.textContent = "Camera is off.";
         clearOverlay();
     }
 
@@ -784,24 +894,38 @@ uploadPredictBtn.addEventListener("click", async () => {
             const result = await res.json();
             const digits = result.digits || [];
 
-            drawOverlay(digits);
-            statusEl.textContent = digits.length > 0
-                ? `Phát hiện ${digits.length} chữ số`
-                : "Chưa phát hiện chữ số nào trong khung hình";
+            drawOverlay(digits, null);
         } catch (err) {
             console.error("predict_frame error:", err);
-            statusEl.textContent = "Lỗi kết nối server khi xử lý frame.";
+            statusEl.textContent = "Error connecting to server when processing frame.";
         } finally {
             isProcessing = false;
         }
     }
 
-    function drawOverlay(digits) {
+    function renderWebcamDigits(digits) {
+        if (!digits || digits.length === 0) {
+            webcamDigitsEl.innerHTML = "";
+            return;
+        }
+
+        const sortedDigits = [...digits].sort((a, b) => a.bbox[0] - b.bbox[0]);
+
+        webcamDigitsEl.innerHTML = sortedDigits.map((d) => `
+            <div class="webcam-digit-card">
+                <span class="digit">${d.digit}</span>
+                <span class="confidence">${d.confidence.toFixed(0)}%</span>
+            </div>
+        `).join("");
+    }
+
+    function drawOverlay(digits, roiBbox) {
         const ctx = overlay.getContext("2d");
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
         ctx.lineWidth = 3;
         ctx.strokeStyle = "#4f8cff";
+        ctx.fillStyle = "#4f8cff";
         ctx.font = "bold 20px -apple-system, sans-serif";
 
         digits.forEach((d) => {
@@ -812,11 +936,14 @@ uploadPredictBtn.addEventListener("click", async () => {
             const textWidth = ctx.measureText(label).width;
             const labelY = y - 10 > 24 ? y - 10 : y + h + 26;
 
-            ctx.fillStyle = "#4f8cff";
+            
             ctx.fillRect(x, labelY - 24, textWidth + 16, 28);
             ctx.fillStyle = "#ffffff";
             ctx.fillText(label, x + 8, labelY - 3);
+            ctx.fillStyle = "#4f8cff";
         });
+
+        renderWebcamDigits(digits);
     }
 
     toggleBtn.addEventListener("click", () => {
@@ -824,7 +951,6 @@ uploadPredictBtn.addEventListener("click", async () => {
         else startCamera();
     });
 
-    // Tắt camera khi rời trang, tránh đèn camera sáng liên tục
     window.addEventListener("beforeunload", stopCamera);
 })();
 </script>
