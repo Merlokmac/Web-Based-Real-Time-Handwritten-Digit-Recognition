@@ -24,6 +24,10 @@ app = Flask(__name__)
 
 MODEL_PATH = "outputs/best_model.pth"
 MNIST_MEAN, MNIST_STD = 0.1307, 0.3081
+# Ngưỡng tin cậy tối thiểu để hiển thị 1 dự đoán trong chế độ webcam real-time.
+# Dưới ngưỡng này model đang "phân vân" giữa nhiều số -> bỏ qua thay vì hiển
+# thị đại 1 số, tránh nhấp nháy/nhảy loạn giữa các frame.
+MIN_FRAME_CONFIDENCE = 55.0
 
 device = torch.device("cpu")  # inference 1 ảnh nhỏ, CPU đủ nhanh, không cần MPS/CUDA
 model = MnistCNN().to(device)
@@ -214,7 +218,13 @@ def segment_digits(
     Trả về danh sách dict {"bbox": (x, y, w, h), "crop": ảnh xám đã crop sát
     từng số}, sắp xếp theo thứ tự trái sang phải.
     """
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # CLAHE (cân bằng histogram thích nghi cục bộ): ảnh chụp qua webcam
+    # thường có ánh sáng không đều (bóng đổ, loá 1 góc, auto-exposure dao
+    # động) - CLAHE làm đều độ tương phản theo từng vùng nhỏ trước khi
+    # threshold, giúp adaptiveThreshold ổn định hơn giữa các frame.
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    gray_eq = clahe.apply(gray)
+    blurred = cv2.GaussianBlur(gray_eq, (5, 5), 0)
 
     # blockSize=31: kích thước vùng lân cận để tính ngưỡng cục bộ (phải là số lẻ)
     # C=-15 (offset âm): pixel phải sáng hơn trung bình vùng lân cận ít nhất
@@ -252,6 +262,18 @@ def segment_digits(
         # "vỡ trận", cả khung hình dính thành 1 khối - không phải chữ số)
         if w * h > img_area * max_area_ratio:
             continue
+        # Loại box chạm sát viền khung hình: thường là mép giấy, ngón tay
+        # cầm giấy, hoặc vệt sáng/bóng ở rìa ảnh webcam - không phải chữ số
+        border_margin = 2
+        if (x <= border_margin or y <= border_margin
+                or x + w >= img_w - border_margin
+                or y + h >= img_h - border_margin):
+            continue
+        # Loại box có tỉ lệ khung hình bất thường (quá dẹt ngang/dọc) -
+        # thường là nét kẻ ô ly, mép giấy, hoặc vệt nhiễu, không phải 1 chữ số
+        aspect = w / h
+        if aspect < 0.15 or aspect > 3.0:
+            continue
         boxes.append((x, y, w, h))
 
     boxes.sort(key=lambda b: b[0])  # trái -> phải
@@ -277,6 +299,14 @@ def preprocess_digit_crop(crop: np.ndarray) -> torch.Tensor:
     """Center 1 chữ số đã crop (ảnh xám, nét sáng/nền tối) vào khung 28x28,
     dùng đúng logic resize-về-20x20-rồi-dán-giữa như preprocess_canvas_image,
     sau đó chuẩn hóa theo mean/std MNIST."""
+    # Nét bút trên giấy (đặc biệt bút bi/bút chì mảnh) MẢNH hơn nhiều so với
+    # nét trong MNIST gốc (vốn khá dày do cách chuẩn hoá dữ liệu gốc: co về
+    # 20x20 từ ảnh nhị phân rồi lấy mẫu lại). Model học trên nét dày nên gặp
+    # nét mảnh dễ đoán sai/thiếu tự tin -> dãn nét (dilate) nhẹ trước khi
+    # resize để đưa độ dày nét về gần với phân bố lúc huấn luyện.
+    dilate_kernel = np.ones((3, 3), np.uint8)
+    crop = cv2.dilate(crop, dilate_kernel, iterations=1)
+
     h, w = crop.shape
     scale = 20.0 / max(w, h)
     new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
@@ -286,6 +316,11 @@ def preprocess_digit_crop(crop: np.ndarray) -> torch.Tensor:
     paste_x = (28 - new_w) // 2
     paste_y = (28 - new_h) // 2
     canvas[paste_y:paste_y + new_h, paste_x:paste_x + new_w] = resized
+
+    # Làm mượt nhẹ để mô phỏng anti-alias của ảnh MNIST gốc (nét không phải
+    # nhị phân cứng 0/255 mà có gradient mềm ở viền) - giúp phân bố pixel
+    # gần với dữ liệu huấn luyện hơn
+    canvas = cv2.GaussianBlur(canvas, (3, 3), 0.6)
 
     tensor = torch.from_numpy(canvas).float() / 255.0
     tensor = (tensor - MNIST_MEAN) / MNIST_STD
@@ -422,6 +457,8 @@ def predict_frame():
 
         digit = int(np.argmax(probs))
         conf = round(float(probs[digit]) * 100, 2)
+        if conf < MIN_FRAME_CONFIDENCE:
+            continue  # model chưa đủ chắc chắn -> bỏ qua, không hiển thị
         digits_result.append({
             "digit": digit,
             "confidence": conf,
