@@ -25,15 +25,6 @@ app = Flask(__name__)
 MODEL_PATH = "outputs/best_model.pth"
 MNIST_MEAN, MNIST_STD = 0.1307, 0.3081
 
-# Model chỉ có 10 lớp (0-9), không có khái niệm "không phải chữ số" - nên
-# với ảnh có lẫn chữ cái/ký tự khác, model vẫn ép ra 1 số với 1 độ tin cậy
-# nào đó. Ngưỡng này lọc bớt các dự đoán quá thiếu chắc chắn (nhiều khả
-# năng không phải chữ số thật). KHÔNG loại bỏ hoàn toàn được vấn đề, vì
-# vài ký tự có hình dạng trùng chữ số thật sự (vd. "S"≈5, "O"≈0) vẫn có
-# thể được dự đoán với confidence cao - đây là giới hạn cố hữu của bài
-# toán phân loại 10 lớp, không phải lỗi code.
-CONFIDENCE_THRESHOLD = 60.0
-
 device = torch.device("cpu")  # inference 1 ảnh nhỏ, CPU đủ nhanh, không cần MPS/CUDA
 model = MnistCNN().to(device)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
@@ -41,7 +32,7 @@ model.eval()
 print(f"Đã load model từ {MODEL_PATH}, sẵn sàng dự đoán.")
 
 
-def preprocess_canvas_image(data_url: str) -> torch.Tensor:
+def preprocess_canvas_image(data_url: str):
     """
     Chuyển ảnh canvas (nét trắng, nền đen, do người dùng vẽ) thành tensor
     28x28 chuẩn hóa giống hệt cách MNIST gốc được xử lý:
@@ -52,6 +43,10 @@ def preprocess_canvas_image(data_url: str) -> torch.Tensor:
          trọng tâm khối lượng trong khung 28x28, ở đây mình dùng center theo
          bounding box - đơn giản hơn nhưng vẫn cho kết quả tốt)
       4. Chuẩn hóa theo mean/std của MNIST
+
+    Trả về (tensor, raw_canvas_28x28): raw_canvas là ảnh PIL 28x28 CHƯA
+    chuẩn hóa (giá trị pixel gốc 0-255) - dùng làm nền để vẽ đè heatmap
+    Grad-CAM lên sau này.
     """
     # data_url dạng "data:image/png;base64,xxxxx"
     img_data = re.sub("^data:image/.+;base64,", "", data_url)
@@ -61,8 +56,9 @@ def preprocess_canvas_image(data_url: str) -> torch.Tensor:
 
     # Nếu không vẽ gì (toàn đen) -> trả về ảnh rỗng, tránh lỗi chia cho 0
     if arr.max() == 0:
-        empty = torch.zeros(1, 1, 28, 28)
-        return empty
+        empty_tensor = torch.zeros(1, 1, 28, 28)
+        empty_canvas = Image.new("L", (28, 28), color=0)
+        return empty_tensor, empty_canvas
 
     # Tìm bounding box của vùng có nét vẽ (pixel sáng > ngưỡng)
     coords = np.argwhere(arr > 20)
@@ -88,7 +84,97 @@ def preprocess_canvas_image(data_url: str) -> torch.Tensor:
     tensor = (tensor - MNIST_MEAN) / MNIST_STD
     tensor = tensor.unsqueeze(0).unsqueeze(0)  # -> shape [1, 1, 28, 28]
 
-    return tensor
+    return tensor, canvas
+
+
+def get_top_k(probs: np.ndarray, k: int = 3):
+    """Trả về top-k dự đoán có xác suất cao nhất, sắp xếp giảm dần."""
+    top_idx = np.argsort(probs)[::-1][:k]
+    return [
+        {"digit": int(i), "confidence": round(float(probs[i]) * 100, 2)}
+        for i in top_idx
+    ]
+
+
+# Lớp Conv cuối cùng của conv_block2 (sau ReLU, trước MaxPool cuối) - dùng
+# làm target layer cho Grad-CAM. Đây là lớp tích chập sâu nhất, giữ được
+# nhiều thông tin không gian nhất (feature map 14x14) trước khi bị nén lại
+# qua MaxPool + Flatten, nên phù hợp nhất để trực quan hóa "model nhìn vào đâu".
+GRADCAM_TARGET_LAYER = model.conv_block2[5]
+
+
+def forward_with_gradcam(input_tensor: torch.Tensor, target_layer=GRADCAM_TARGET_LAYER):
+    """
+    Chạy 1 lần forward + 1 lần backward để vừa lấy được dự đoán (probs),
+    vừa tính được Grad-CAM heatmap cho đúng lớp được dự đoán - không cần
+    forward 2 lần.
+
+    Grad-CAM (Selvaraju et al., 2017): heatmap = ReLU( sum_c( w_c * A_c ) )
+    trong đó A_c là feature map kênh thứ c của target_layer, w_c là trọng số
+    = trung bình gradient của điểm số lớp dự đoán theo A_c (global average
+    pooling của gradient) - kênh nào ảnh hưởng nhiều đến quyết định của
+    model thì được nhân trọng số lớn hơn.
+
+    Trả về (probs, predicted_class, cam) với cam là ảnh xám 2D giá trị
+    trong [0,1], kích thước bằng feature map của target_layer (14x14).
+    """
+    activations = {}
+    gradients = {}
+
+    def fwd_hook(module, inp, out):
+        activations["value"] = out
+
+    def bwd_hook(module, grad_input, grad_output):
+        gradients["value"] = grad_output[0]
+
+    h_fwd = target_layer.register_forward_hook(fwd_hook)
+    h_bwd = target_layer.register_full_backward_hook(bwd_hook)
+
+    try:
+        model.zero_grad()
+        logits = model(input_tensor)
+        predicted_class = int(logits.argmax(dim=1).item())
+
+        score = logits[0, predicted_class]
+        score.backward()
+
+        weights = gradients["value"].mean(dim=(2, 3), keepdim=True)  # [1, C, 1, 1]
+        cam = torch.relu((weights * activations["value"]).sum(dim=1, keepdim=True))
+        cam = cam.squeeze().detach().cpu().numpy()
+
+        cam_max = cam.max()
+        if cam_max > 0:
+            cam = cam / cam_max  # normalize về [0, 1]
+
+        probs = F.softmax(logits.detach(), dim=1).squeeze(0).cpu().numpy()
+    finally:
+        h_fwd.remove()
+        h_bwd.remove()
+
+    return probs, predicted_class, cam
+
+
+def make_gradcam_overlay(raw_digit_img: Image.Image, cam: np.ndarray, out_size: int = 140) -> str:
+    """
+    Vẽ heatmap Grad-CAM (giá trị [0,1], kích thước nhỏ vd. 14x14) đè lên
+    ảnh chữ số gốc 28x28, phóng to lên out_size x out_size cho dễ nhìn.
+    Trả về data URL PNG base64.
+    """
+    cam_resized = cv2.resize(cam.astype(np.float32), (28, 28), interpolation=cv2.INTER_CUBIC)
+    cam_resized = np.clip(cam_resized, 0, 1)
+    cam_uint8 = np.uint8(255 * cam_resized)
+
+    heatmap = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)  # BGR, đỏ = ảnh hưởng mạnh
+    heatmap_rgb = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+
+    raw_rgb = np.array(raw_digit_img.convert("RGB"))
+    overlay = (0.5 * raw_rgb + 0.5 * heatmap_rgb).astype(np.uint8)
+
+    overlay_big = cv2.resize(overlay, (out_size, out_size), interpolation=cv2.INTER_CUBIC)
+
+    buf = io.BytesIO()
+    Image.fromarray(overlay_big).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def load_and_normalize_image(file_bytes: bytes):
@@ -110,142 +196,81 @@ def load_and_normalize_image(file_bytes: bytes):
     return img_color, gray
 
 
-def normalize_gray_image(gray: np.ndarray) -> np.ndarray:
-    """Chuẩn hóa ảnh xám để giảm nhiễu, cân bằng độ sáng và giữ nét chữ rõ hơn."""
-    gray = gray.astype(np.uint8)
-
-    # Nếu nền sáng chiếm đa số, đảo ảnh để chuyển về quy ước MNIST: chữ nét đậm trên nền tối.
-    if np.mean(gray) > 127:
-        gray = 255 - gray
-
-    gray = cv2.medianBlur(gray, 3)
-
-    # Tăng độ tương phản cục bộ để xử lý nền chụp mờ hoặc ảnh thiếu sáng.
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-
-    # Cân bằng lại độ sáng toàn cục nhưng tránh làm vỡ nét chữ.
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    return gray
-
-
 def segment_digits(
     gray: np.ndarray,
-    min_area_ratio: float = 0.00005,
-    min_height_ratio: float = 0.008,
-    max_area_ratio: float = 0.9,
-    max_aspect_ratio: float = 4.0,
-    min_extent: float = 0.03,
-    min_solidity: float = 0.08,
+    min_area_ratio: float = 0.0005,
+    min_height_ratio: float = 0.03,
+    max_area_ratio: float = 0.5,
 ):
-    """Tách vùng chữ số cho cả ảnh cầm tay nhỏ và ảnh chụp thực tế. Mục tiêu là không lọc quá chặt như các phiên bản trước."""
-    gray = normalize_gray_image(gray)
+    """
+    Tách từng chữ số trong ảnh xám (đã chuẩn hóa nét sáng/nền tối).
+
+    Dùng ADAPTIVE THRESHOLD (so sánh mỗi pixel với vùng lân cận) thay vì
+    Otsu toàn cục - quan trọng khi chụp giấy kẻ ô ly hoặc ánh sáng không
+    đều (đặc biệt qua webcam): Otsu dễ nhận nhầm cả lưới kẻ ô thành "nét vẽ",
+    hoặc làm vỡ nét bút mảnh thành nhiều mảnh rời rạc (mỗi mảnh bị coi là
+    1 "chữ số" khác nhau -> bounding box nhỏ vụn, dự đoán sai/nhảy loạn).
+
+    Trả về danh sách dict {"bbox": (x, y, w, h), "crop": ảnh xám đã crop sát
+    từng số}, sắp xếp theo thứ tự trái sang phải.
+    """
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # blockSize=31: kích thước vùng lân cận để tính ngưỡng cục bộ (phải là số lẻ)
+    # C=-15 (offset âm): pixel phải sáng hơn trung bình vùng lân cận ít nhất
+    # 15 mức xám mới được coi là "nét vẽ" - giúp loại lưới kẻ ô nhạt, giữ
+    # lại nét mực đậm
+    mask = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
+        blockSize=31, C=-15,
+    )
+
+    # Phép mở (opening): xóa các đốm nhiễu rất nhỏ/mảnh (vd. lưới kẻ ô còn sót)
+    kernel_open = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+
+    # Phép đóng (closing): nối liền các đoạn nét chữ bị đứt quãng do threshold
+    kernel_close = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
     img_h, img_w = gray.shape
     img_area = img_h * img_w
 
-    def _collect_boxes(mask: np.ndarray):
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area <= 0:
-                continue
-
-            x, y, w, h = cv2.boundingRect(cnt)
-            area_bbox = w * h
-            if area_bbox <= 0:
-                continue
-            if w < 2 or h < 2:
-                continue
-            if area_bbox < img_area * min_area_ratio:
-                continue
-            if h < img_h * min_height_ratio:
-                continue
-            if area_bbox > img_area * max_area_ratio:
-                continue
-            if w / h > max_aspect_ratio:
-                continue
-            if h / w > 6.0:
-                continue
-            if area / area_bbox < min_extent:
-                continue
-
-            hull = cv2.convexHull(cnt)
-            hull_area = cv2.contourArea(hull)
-            if hull_area > 0 and area / hull_area < min_solidity:
-                continue
-
-            boxes.append((x, y, w, h))
-        return boxes
-
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    masks = []
-
-    # Dùng nhiều ngưỡng để giữ trường hợp hình chụp có chữ rất nhòe hoặc chữ sáng/đậm khác nhau.
-    thresholds = [
-        int(np.clip(np.percentile(blurred, 10), 20, 140)),
-        int(np.clip(np.percentile(blurred, 25), 30, 170)),
-        int(np.clip(np.percentile(blurred, 40), 40, 200)),
-        int(np.clip(np.percentile(blurred, 60), 60, 220)),
-        128,
-    ]
-
-    for t in sorted(set(thresholds)):
-        _, dark_on_light = cv2.threshold(blurred, t, 255, cv2.THRESH_BINARY_INV)
-        _, light_on_dark = cv2.threshold(blurred, t, 255, cv2.THRESH_BINARY)
-        masks.extend([dark_on_light, light_on_dark])
-
-    adaptive_inv = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV,
-        blockSize=31, C=8,
-    )
-    adaptive = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
-        blockSize=31, C=8,
-    )
-    masks.extend([adaptive_inv, adaptive])
-
     boxes = []
-    for mask in masks:
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
-        boxes.extend(_collect_boxes(mask))
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        # Lọc nhiễu: đốm quá nhỏ (bụi, vết bẩn, mảnh vụn còn sót của lưới kẻ)
+        if w * h < img_area * min_area_ratio:
+            continue
+        # Lọc theo chiều cao tối thiểu so với khung hình: loại các mảnh vụn
+        # li ti, giữ lại các nét đủ lớn để thực sự là 1 chữ số
+        if h < img_h * min_height_ratio:
+            continue
+        # An toàn: loại box chiếm gần hết khung hình (dấu hiệu threshold
+        # "vỡ trận", cả khung hình dính thành 1 khối - không phải chữ số)
+        if w * h > img_area * max_area_ratio:
+            continue
+        boxes.append((x, y, w, h))
 
-    if not boxes:
-        return []
-
-    # Gộp các box chồng nhau nhưng không loại quá nhiều trường hợp.
-    boxes = sorted(boxes, key=lambda b: (b[0], b[1]))
-    merged = []
-    for box in boxes:
-        x, y, w, h = box
-        placed = False
-        for i, (mx, my, mw, mh) in enumerate(merged):
-            if x < mx + mw and x + w > mx and y < my + mh and y + h > my:
-                if w * h > mw * mh:
-                    merged[i] = (x, y, w, h)
-                placed = True
-                break
-        if not placed:
-            merged.append(box)
+    boxes.sort(key=lambda b: b[0])  # trái -> phải
 
     segments = []
-    for (x, y, w, h) in merged:
-        pad = max(2, int(0.15 * max(w, h)))
+    for (x, y, w, h) in boxes:
+        pad = max(3, int(0.15 * max(w, h)))
         y0, y1 = max(0, y - pad), min(img_h, y + h + pad)
         x0, x1 = max(0, x - pad), min(img_w, x + w + pad)
 
+        # Crop từ ảnh xám gốc (giữ độ mượt của nét), chỉ giữ vùng thuộc
+        # mask của chính chữ số này để tránh lẫn nét từ số bên cạnh
         crop_gray = gray[y0:y1, x0:x1]
-        crop_mask = np.zeros_like(crop_gray, dtype=np.uint8)
-        crop_mask[max(0, y - y0):max(0, y - y0) + h, max(0, x - x0):max(0, x - x0) + w] = 255
+        crop_mask = mask[y0:y1, x0:x1]
         crop = cv2.bitwise_and(crop_gray, crop_mask)
-
-        if crop.size == 0 or cv2.countNonZero(crop_mask) < 2:
-            continue
 
         segments.append({"bbox": (x, y, w, h), "crop": crop})
 
-    return sorted(segments, key=lambda s: s["bbox"][0])
+    return segments
 
 
 def preprocess_digit_crop(crop: np.ndarray) -> torch.Tensor:
@@ -275,19 +300,30 @@ def index():
 @app.route("/predict", methods=["POST"])
 def predict():
     data = request.get_json()
-    image_tensor = preprocess_canvas_image(data["image"]).to(device)
+    image_tensor, raw_canvas = preprocess_canvas_image(data["image"])
+    image_tensor = image_tensor.to(device)
 
-    with torch.no_grad():
-        logits = model(image_tensor)
-        probs = F.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+    # Nếu canvas trống (chưa vẽ gì) -> không chạy Grad-CAM (không có gì để giải thích)
+    if raw_canvas.getextrema() == (0, 0):
+        return jsonify({
+            "prediction": None,
+            "confidence": 0,
+            "probabilities": {str(i): 0 for i in range(10)},
+            "top3": [],
+            "gradcam_image": None,
+        })
 
-    predicted_digit = int(np.argmax(probs))
+    probs, predicted_digit, cam = forward_with_gradcam(image_tensor)
+    gradcam_b64 = make_gradcam_overlay(raw_canvas, cam)
+
     probabilities = {str(i): round(float(p) * 100, 2) for i, p in enumerate(probs)}
 
     return jsonify({
         "prediction": predicted_digit,
         "confidence": round(float(probs[predicted_digit]) * 100, 2),
         "probabilities": probabilities,
+        "top3": get_top_k(probs, k=3),
+        "gradcam_image": gradcam_b64,
     })
 
 
@@ -308,7 +344,6 @@ def predict_image():
     digits_result = []
     annotated = img_color.copy()
     box_color = (255, 140, 79)  # BGR - tương ứng #4f8cff (màu accent trên UI)
-    rejected_color = (120, 120, 120)  # xám - box bị loại vì confidence thấp
 
     for seg in segments:
         x, y, w, h = seg["bbox"]
@@ -318,19 +353,11 @@ def predict_image():
             probs = F.softmax(model(tensor), dim=1).squeeze(0).cpu().numpy()
         digit = int(np.argmax(probs))
         conf = round(float(probs[digit]) * 100, 2)
-
-        if conf < CONFIDENCE_THRESHOLD:
-            # Không đủ tin cậy để tính là chữ số - vẫn vẽ khung xám để biết
-            # vùng này đã bị phát hiện nhưng bị loại, không lặng lẽ bỏ qua
-            cv2.rectangle(annotated, (x, y), (x + w, y + h), rejected_color, 2)
-            cv2.putText(annotated, "?", (x + 5, y - 8 if y > 20 else y + h + 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, rejected_color, 2)
-            continue
-
         digits_result.append({
             "digit": digit,
             "confidence": conf,
             "bbox": [int(x), int(y), int(w), int(h)],
+            "top3": get_top_k(probs, k=3),
         })
 
         # Vẽ khung + nhãn dự đoán (kèm độ tin cậy) đè lên ảnh gốc
@@ -395,14 +422,11 @@ def predict_frame():
 
         digit = int(np.argmax(probs))
         conf = round(float(probs[digit]) * 100, 2)
-
-        if conf < CONFIDENCE_THRESHOLD:
-            continue  # không đủ tin cậy - bỏ qua, tránh nhấp nháy số sai trên overlay
-
         digits_result.append({
             "digit": digit,
             "confidence": conf,
             "bbox": [int(x), int(y), int(w), int(h)],
+            "top3": get_top_k(probs, k=3),
         })
 
     return jsonify({"digits": digits_result})
