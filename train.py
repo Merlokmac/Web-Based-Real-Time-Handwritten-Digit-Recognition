@@ -28,14 +28,36 @@ def get_device() -> torch.device:
 
 
 def get_dataloaders(data_dir: str, batch_size: int):
-    # Chuẩn hóa theo mean/std chuẩn của MNIST
-    transform = transforms.Compose([
+    # Tập test: giữ nguyên sạch (không augment) để accuracy phản ánh đúng khả năng thật của model
+    test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,)),
     ])
 
-    train_dataset = datasets.MNIST(root=data_dir, train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST(root=data_dir, train=False, download=True, transform=transform)
+    # Tập train: augmentation để mô phỏng điều kiện thực tế (viết tay nghiêng nhẹ,
+    # ánh sáng/tương phản không đều khi chụp ảnh hoặc quay webcam)
+    train_transform = transforms.Compose([
+        # Xoay nhẹ ±20 độ: mô phỏng nét viết tay nghiêng tự nhiên.
+        # Không dùng góc lớn hơn (vd 45-90 độ) vì sẽ gây nhầm nhãn giữa
+        # các số có hình dạng gần giống nhau khi xoay (đặc biệt 6 và 9).
+        transforms.RandomRotation(degrees=20, fill=0),
+        # Dịch chuyển, co giãn, và nghiêng nhẹ: mô phỏng việc chữ số không
+        # luôn được viết/chụp căn giữa và đúng tỉ lệ chuẩn
+        transforms.RandomAffine(degrees=0, translate=(0.10, 0.10), scale=(0.85, 1.15), shear=8, fill=0),
+        # Độ sáng & tương phản thay đổi: mô phỏng điều kiện ánh sáng khác nhau
+        # khi dùng webcam hoặc chụp ảnh (đèn phòng, ám màu, ánh sáng ngược...)
+        transforms.ColorJitter(brightness=0.35, contrast=0.35),
+        # Làm mờ nhẹ ngẫu nhiên: mô phỏng ảnh webcam hơi mất nét/rung tay
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.2))], p=0.25),
+        transforms.ToTensor(),
+        # Che ngẫu nhiên một vùng nhỏ: mô phỏng nét chữ bị che một phần do
+        # bóng đổ, ngón tay, hoặc nhiễu khi nhị phân hóa ảnh
+        transforms.RandomErasing(p=0.15, scale=(0.02, 0.08), ratio=(0.5, 2.0), value=0),
+        transforms.Normalize((0.1307,), (0.3081,)),
+    ])
+
+    train_dataset = datasets.MNIST(root=data_dir, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.MNIST(root=data_dir, train=False, download=True, transform=test_transform)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
@@ -218,3 +240,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
